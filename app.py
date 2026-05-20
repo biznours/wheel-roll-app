@@ -272,17 +272,6 @@ else:
                 f"**|Δ|** : {abs(top['delta']):.3f}  \n"
                 f"**Yield annualisé** : {top['yield_ann']*100:.2f}%"
             )
-            with st.expander("Top 3 candidats roll"):
-                rows = [{
-                    "Strike": f"${c['strike']:.2f}",
-                    "Expiry": datetime.strptime(c['expiry'], "%Y-%m-%d").strftime("%d-%m-%Y"),
-                    "DTE+": c['dte_add'],
-                    "Crédit": f"${c['credit_net']:+.2f}",
-                    "|Δ|": f"{abs(c['delta']):.3f}",
-                    "Annualisé %": f"{c['yield_ann']*100:.2f}",
-                    "Score %": f"{c['score']*100:.2f}",
-                } for c in candidats[:3]]
-                st.dataframe(rows, use_container_width=True, hide_index=True)
         else:
             st.warning("Aucun candidat à crédit net positif.")
             if stats["testes"] > 0:
@@ -308,6 +297,20 @@ else:
             st.warning(f"Non viable : {traj_b.get('raison', 'raison inconnue')}")
         else:
             st.info("Non évaluée (aucun top roll de référence).")
+
+    # Top 3 candidats roll — full width pour éviter le scroll horizontal
+    if candidats:
+        with st.expander("Top 3 candidats roll (trajectoire A)"):
+            rows = [{
+                "Strike": f"${c['strike']:.2f}",
+                "Expiry": datetime.strptime(c['expiry'], "%Y-%m-%d").strftime("%d-%m-%Y"),
+                "DTE+": c['dte_add'],
+                "Crédit": f"${c['credit_net']:+.2f}",
+                "|Δ|": f"{abs(c['delta']):.3f}",
+                "Annualisé %": f"{c['yield_ann']*100:.2f}",
+                "Score %": f"{c['score']*100:.2f}",
+            } for c in candidats[:3]]
+            st.dataframe(rows, use_container_width=True, hide_index=True)
 
     # Verdict
     st.divider()
