@@ -6,14 +6,13 @@ Lancement local :
     streamlit run app.py
 
 Secrets attendus (dans .streamlit/secrets.toml en local, dashboard en prod) :
-    password       = "..."     # auth principale (utilisateurs)
-    admin_pin      = "..."     # PIN admin pour afficher le compteur
-    smtp_user      = "..."     # expéditeur Gmail
-    smtp_password  = "..."     # App password Gmail
-    smtp_to        = "..."     # destinataire feedback (toi)
-    counter_visit  = "..."     # namespace counterapi visites (ex: "wheel-roll-visit-xyz")
-    counter_usage  = "..."     # namespace counterapi clics Analyser (ex: "wheel-roll-usage-xyz")
-    admin_url_token = "..."    # token URL pour t'exclure des compteurs (?admin=TOKEN)
+    password        = "..."    # auth principale (utilisateurs)
+    smtp_user       = "..."    # expéditeur Gmail
+    smtp_password   = "..."    # App password Gmail
+    smtp_to         = "..."    # destinataire feedback (admin)
+    counter_visit   = "..."    # namespace counterapi visites
+    counter_usage   = "..."    # namespace counterapi clics Analyser
+    admin_url_token = "..."    # token URL pour exclure l'admin (?admin=TOKEN)
 """
 
 from __future__ import annotations
@@ -100,11 +99,8 @@ if not check_password():
 def _est_admin() -> bool:
     """Vrai si l'utilisateur courant est admin (skip compteurs + voit stats).
 
-    Détection via :
-    1. Query param ?admin=TOKEN qui matche st.secrets['admin_url_token']
-       → activé dès le 1er run, donc même les visites de l'admin sont skippées.
-    2. PIN saisi via clic logo (session_state.admin_unlocked) → activé après
-       chargement, donc la visite est déjà comptée.
+    Détection via query param ?admin=TOKEN qui matche st.secrets['admin_url_token'].
+    L'admin doit bookmarker l'URL avec le token pour conserver ses droits.
     """
     if st.session_state.get("admin_unlocked"):
         return True
@@ -403,23 +399,7 @@ st.caption(
     "Vérifie toujours les prix bid/ask dans ton broker avant d'agir."
 )
 
-# Petit logo en bas. Clic → PIN admin → affiche compteur (silencieux si PIN faux).
-col_logo_l, col_logo_r = st.columns([10, 1])
-with col_logo_r:
-    if st.button("📊", help=" ", key="logo_admin"):
-        st.session_state.show_admin_prompt = True
-
-if st.session_state.get("show_admin_prompt"):
-    pin = st.text_input("PIN", type="password", key="admin_pin_input",
-                         label_visibility="collapsed", placeholder="PIN")
-    if pin:
-        try:
-            expected_pin = st.secrets.get("admin_pin")
-        except Exception:
-            expected_pin = None
-        if expected_pin and pin == expected_pin:
-            st.session_state.admin_unlocked = True
-
+# Stats admin (visible uniquement avec query param ?admin=TOKEN dans l'URL)
 if _est_admin():
     visites = _lire_compteur("counter_visit")
     usages = _lire_compteur("counter_usage")
