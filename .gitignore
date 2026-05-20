@@ -1,0 +1,17 @@
+# Secrets Streamlit (le password est dans le dashboard Streamlit Cloud)
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
