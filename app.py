@@ -45,9 +45,9 @@ st.set_page_config(
 def check_password() -> bool:
     """Authentification simple par mot de passe partagé.
 
-    Le mot de passe est lu depuis st.secrets["password"]. Pas de st.rerun()
-    pour éviter une erreur DOM transitoire dans certaines versions de
-    navigateur (NotFoundError: removeChild).
+    Utilise st.empty() pour pouvoir effacer le form du DOM après validation
+    (sinon il reste affiché au-dessus du reste de l'app). Pas de st.rerun()
+    qui causait une erreur DOM transitoire.
     """
     if st.session_state.get("authenticated"):
         return True
@@ -60,18 +60,22 @@ def check_password() -> bool:
                  "côté serveur (st.secrets['password']).")
         return False
 
-    st.title("🎯 Roll Analyzer Wheel")
-    st.caption("Accès restreint — entre le mot de passe partagé.")
-
-    with st.form("auth_form", clear_on_submit=True):
-        pwd = st.text_input("Mot de passe", type="password")
-        submitted = st.form_submit_button("Valider")
+    placeholder = st.empty()
+    submitted = False
+    pwd = ""
+    with placeholder.container():
+        st.title("🎯 Roll Analyzer Wheel")
+        st.caption("Accès restreint — entre le mot de passe partagé.")
+        with st.form("auth_form", clear_on_submit=True):
+            pwd = st.text_input("Mot de passe", type="password")
+            submitted = st.form_submit_button("Valider")
+        if submitted and pwd != expected:
+            st.error("Mot de passe incorrect.")
 
     if submitted and pwd == expected:
         st.session_state.authenticated = True
+        placeholder.empty()
         return True
-    if submitted:
-        st.error("Mot de passe incorrect.")
     return False
 
 
