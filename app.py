@@ -127,7 +127,8 @@ def _incrementer_compteur(key_name: str, dedupe_session: bool = False) -> None:
         ns = st.secrets.get(key_name)
         if not ns:
             return
-        requests.get(f"https://api.counterapi.dev/v1/{ns}/up", timeout=3)
+        # counterapi.dev v1 : /{namespace}/{counter}/up incrémente
+        requests.get(f"https://api.counterapi.dev/v1/{ns}/counter/up", timeout=3)
         if dedupe_session:
             st.session_state[f"counted_{key_name}"] = True
     except Exception:
@@ -140,7 +141,8 @@ def _lire_compteur(key_name: str) -> int | None:
         ns = st.secrets.get(key_name)
         if not ns:
             return None
-        r = requests.get(f"https://api.counterapi.dev/v1/{ns}", timeout=3)
+        # counterapi.dev v1 : /{namespace}/{counter} retourne {"count": N, ...}
+        r = requests.get(f"https://api.counterapi.dev/v1/{ns}/counter", timeout=3)
         r.raise_for_status()
         return int(r.json().get("count", 0))
     except Exception:
