@@ -279,8 +279,8 @@ else:
                     "DTE+": c['dte_add'],
                     "Crédit": f"${c['credit_net']:+.2f}",
                     "|Δ|": f"{abs(c['delta']):.3f}",
-                    "YA%": f"{c['yield_ann']*100:.2f}",
-                    "Score%": f"{c['score']*100:.2f}",
+                    "Annualisé %": f"{c['yield_ann']*100:.2f}",
+                    "Score %": f"{c['score']*100:.2f}",
                 } for c in candidats[:3]]
                 st.dataframe(rows, use_container_width=True, hide_index=True)
         else:
