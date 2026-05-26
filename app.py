@@ -31,7 +31,7 @@ import streamlit as st
 import yfinance as yf
 
 from roll_analyzer import (
-    DTE_MIN, DTE_MAX, RATIO_ASSIGN, RATIO_ROLL,
+    DTE_MIN, DTE_MAX, RATIO_ASSIGN, RATIO_ROLL, FRAIS_PAR_LEG_DEFAUT,
     fetch_spot, fetch_expirations_window, prix_rachat_csp,
     generer_candidats_roll, calc_pru_net, evaluer_trajectoire_b,
     calculer_verdict, marche_us_ouvert,
@@ -49,6 +49,8 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="collapsed",
 )
+
+st.markdown('<meta name="google" content="notranslate">', unsafe_allow_html=True)
 
 
 # ================================================================
@@ -163,6 +165,11 @@ st.caption(
     "*accepter l'assignation + vendre un covered call*. Verdict basé sur le "
     "ratio des yields annualisés à horizon égal."
 )
+st.caption(
+    "⚠️ Désactive la traduction automatique de ton navigateur sur cette page "
+    "(clic droit → *Afficher la page d'origine*), sinon les termes financiers "
+    "seront mal traduits (Strike → Grève, Ticker → Télescripteur…)."
+)
 
 st.divider()
 
@@ -187,9 +194,33 @@ with col2:
         format="DD/MM/YYYY",
     )
     premiums_cumul_total = st.number_input(
-        "Cumul primes encaissées ($, total pour 100 actions)",
+        "Cumul primes encaissées (montant total $)",
         min_value=0.0, value=0.0, step=1.0, format="%.2f",
-        help="Total en dollars reçu sur cette position. Ex : si tu as encaissé 0.25 $/action sur 100 actions, entre 25.",
+        help="Montant total reçu en dollars, tous contrats confondus. "
+             "Ex : prime 0.35$/action × 2 contrats × 100 actions = entre 70$.",
+    )
+
+col3, col4, col5 = st.columns(3)
+with col3:
+    nb_contrats = st.number_input(
+        "Nombre de contrats",
+        min_value=1, value=1, step=1,
+        help="Nombre de contrats CSP ouverts sur cette position.",
+    )
+with col4:
+    frais_passes = st.number_input(
+        "Frais déjà payés ($)",
+        min_value=0.0, value=0.0, step=1.0, format="%.2f",
+        help="Total des frais broker déjà payés sur cette position "
+             "(ouverture + rolls précédents). Déduit du cumul de primes.",
+    )
+with col5:
+    frais_roll = st.number_input(
+        "Frais du roll ($)",
+        min_value=0.0, value=0.0, step=0.50, format="%.2f",
+        help="Frais affichés par ton broker pour le roll "
+             "(rachat + vente combinés, tous contrats). "
+             "Visible dans l'outil Roll Order chez IBKR/MEXEM.",
     )
 
 analyser = st.button("🔍 Analyser", use_container_width=True, type="primary")
@@ -198,7 +229,7 @@ st.divider()
 
 if not analyser:
     st.info(
-        "ℹ️ Remplis les 4 champs au-dessus et clique **Analyser**.  \n"
+        "ℹ️ Remplis les champs au-dessus et clique **Analyser**.  \n"
         "Le module compare :  \n"
         "- **Trajectoire A** : meilleur roll à crédit net positif (fenêtre 7-28 DTE)  \n"
         "- **Trajectoire B** : assignation + covered call au strike `max(PRU, spot)`  \n"
@@ -212,7 +243,8 @@ else:
     # Analyse
     # ================================================================
     ticker = ticker.strip().upper()
-    premiums_cumul = premiums_cumul_total / 100.0  # conversion total → par action
+    premiums_cumul = (premiums_cumul_total - frais_passes) / (nb_contrats * 100.0)
+    frais_par_leg = frais_roll / (2 * max(nb_contrats, 1))
 
     if not ticker:
         st.error("Ticker vide.")
@@ -228,12 +260,16 @@ else:
             expiries = fetch_expirations_window(ticker_obj, today)
             prix_rachat = prix_rachat_csp(ticker_obj, strike_csp, expiry_csp)
             candidats, stats = generer_candidats_roll(
-                ticker_obj, spot, strike_csp, expiry_csp, expiries, prix_rachat, today
+                ticker_obj, spot, strike_csp, expiry_csp, expiries, prix_rachat, today,
+                frais_par_leg=frais_par_leg,
             )
             pru_net = calc_pru_net(strike_csp, premiums_cumul)
             traj_b = None
             if candidats:
-                traj_b = evaluer_trajectoire_b(ticker_obj, candidats[0], pru_net, spot, today)
+                traj_b = evaluer_trajectoire_b(
+                    ticker_obj, candidats[0], pru_net, spot, today,
+                    frais_par_leg=frais_par_leg,
+                )
             verdict_code, ratio = calculer_verdict(candidats, traj_b, spot, pru_net)
         except RuntimeError as e:
             st.error(f"❌ {e}")
@@ -254,9 +290,21 @@ else:
     c1, c2, c3 = st.columns(3)
     c1.metric("Spot", f"${spot:.2f}", help=spot_label)
     c2.metric("PRU net", f"${pru_net:.2f}",
-               help=f"strike ${strike_csp:.2f} − cumul ${premiums_cumul_total:.2f}/100")
+               help=f"strike ${strike_csp:.2f} − (primes {premiums_cumul_total:.2f}$ "
+                    f"− frais passés {frais_passes:.2f}$) / {nb_contrats * 100}")
     c3.metric("Rachat CSP", f"${prix_rachat:.2f}",
                help=f"Mid du put {strike_csp} @ {expiry_fr}")
+    frais_cc = frais_roll / 2
+    frais_parts = []
+    if frais_passes > 0:
+        frais_parts.append(f"Frais passés : {frais_passes:.2f}$ (déduits des primes)")
+    if frais_roll > 0:
+        frais_parts.append(
+            f"Frais roll : {frais_roll:.2f}$ (déduits du crédit) · "
+            f"Frais CC estimés : {frais_cc:.2f}$ (½ du roll)"
+        )
+    if frais_parts:
+        st.caption("📊 " + " · ".join(frais_parts))
 
     # Trajectoires
     tA, tB = st.columns(2)
@@ -265,13 +313,19 @@ else:
         if candidats:
             top = candidats[0]
             exp_fr = datetime.strptime(top['expiry'], "%Y-%m-%d").strftime("%d-%m-%Y")
+            credit_total = top['credit_net'] * nb_contrats * 100
             st.markdown(
                 f"**Strike** : ${top['strike']:.2f}  \n"
                 f"**Expiration** : {exp_fr} (+{top['dte_add']}j)  \n"
-                f"**Crédit net** : ${top['credit_net']:+.2f}  \n"
+                f"**Crédit net** : ${top['credit_net']:+.2f}/action "
+                f"(**${credit_total:+,.0f}** total)  \n"
                 f"**|Δ|** : {abs(top['delta']):.3f}  \n"
                 f"**Yield annualisé** : {top['yield_ann']*100:.2f}%"
             )
+            if frais_roll > 0:
+                st.caption("ℹ️ Crédit net = prime roll − rachat CSP − frais roll")
+            else:
+                st.caption("ℹ️ Crédit net = prime roll − rachat CSP")
         else:
             st.warning("Aucun candidat à crédit net positif.")
             if stats["testes"] > 0:
@@ -285,11 +339,13 @@ else:
         st.markdown("### 📉 Trajectoire B — Assignation + CC")
         if traj_b and traj_b.get("viable"):
             exp_b_fr = datetime.strptime(traj_b['expiry'], "%Y-%m-%d").strftime("%d-%m-%Y")
+            prime_total = traj_b['prime_cc'] * nb_contrats * 100
             st.markdown(
                 f"**PRU après assignation** : ${traj_b['pru_net']:.2f}  \n"
                 f"**Strike CC** : ${traj_b['strike_cc']:.2f}  \n"
                 f"**Expiration CC** : {exp_b_fr} (+{traj_b['dte_cc']}j)  \n"
-                f"**Prime CC** : ${traj_b['prime_cc']:.2f}  \n"
+                f"**Prime CC** : ${traj_b['prime_cc']:.2f}/action "
+                f"(**${prime_total:,.0f}** total)  \n"
                 f"**Dividendes** : ${traj_b['dividendes']:.2f}  \n"
                 f"**Yield annualisé** : {traj_b['yield_b']*100:.2f}%"
             )
@@ -305,7 +361,8 @@ else:
                 "Strike": f"${c['strike']:.2f}",
                 "Expiry": datetime.strptime(c['expiry'], "%Y-%m-%d").strftime("%d-%m-%Y"),
                 "DTE+": c['dte_add'],
-                "Crédit": f"${c['credit_net']:+.2f}",
+                "Crédit/act": f"${c['credit_net']:+.2f}",
+                "Crédit total": f"${c['credit_net'] * nb_contrats * 100:+,.0f}",
                 "|Δ|": f"{abs(c['delta']):.3f}",
                 "Annualisé %": f"{c['yield_ann']*100:.2f}",
                 "Score %": f"{c['score']*100:.2f}",

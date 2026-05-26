@@ -27,6 +27,8 @@ SPOT_FLOOR_RATIO = 0.85   # strike candidat roll min = spot * 0.85
 RATIO_ASSIGN = 1.10
 RATIO_ROLL = 0.91
 
+FRAIS_PAR_LEG_DEFAUT = 1.25  # $/contrat/leg (MEXEM/IBKR)
+
 _PARIS = ZoneInfo("Europe/Paris")
 _NY = ZoneInfo("America/New_York")
 
@@ -45,7 +47,11 @@ def parse_args_cli() -> dict | None:
     parser.add_argument("--strike", type=float, help="Strike CSP actuel ($)")
     parser.add_argument("--expiry", type=str, help="Expiration actuelle (YYYY-MM-DD)")
     parser.add_argument("--cumul", type=float, default=None,
-                        help="Cumul premiums encaissees ($), defaut 0")
+                        help="Cumul total premiums encaissees ($), defaut 0")
+    parser.add_argument("--contrats", type=int, default=1,
+                        help="Nombre de contrats, defaut 1")
+    parser.add_argument("--frais", type=float, default=FRAIS_PAR_LEG_DEFAUT,
+                        help=f"Commission par contrat par leg ($), defaut {FRAIS_PAR_LEG_DEFAUT}")
     args = parser.parse_args()
 
     if args.ticker is None and args.strike is None and args.expiry is None and args.cumul is None:
@@ -68,15 +74,22 @@ def parse_args_cli() -> dict | None:
         parser.error(f"--expiry doit etre future (recu : {args.expiry}, today {today})")
     if args.strike <= 0:
         parser.error(f"--strike doit etre > 0 (recu : {args.strike})")
-    cumul = args.cumul if args.cumul is not None else 0.0
-    if cumul < 0:
-        parser.error(f"--cumul doit etre >= 0 (recu : {cumul})")
+    cumul_total = args.cumul if args.cumul is not None else 0.0
+    if cumul_total < 0:
+        parser.error(f"--cumul doit etre >= 0 (recu : {cumul_total})")
+    if args.contrats < 1:
+        parser.error(f"--contrats doit etre >= 1 (recu : {args.contrats})")
+    if args.frais < 0:
+        parser.error(f"--frais doit etre >= 0 (recu : {args.frais})")
 
     return {
         "ticker": args.ticker.strip().upper(),
         "strike_csp": args.strike,
         "expiry_csp": expiry,
-        "premiums_cumul": cumul,
+        "premiums_cumul": cumul_total / (args.contrats * 100),
+        "premiums_cumul_total": cumul_total,
+        "nb_contrats": args.contrats,
+        "frais_par_leg": args.frais,
     }
 
 
@@ -98,13 +111,21 @@ def parse_inputs() -> dict:
 
     strike_csp = _saisir_float("Strike CSP actuel ($) : ", min_val=0.01)
     expiry_csp = _saisir_date("Expiration actuelle (YYYY-MM-DD) : ")
-    premiums_cumul = _saisir_float("Cumul premiums encaissees ($) : ", min_val=0.0)
+    nb_contrats = int(_saisir_float("Nombre de contrats : ", min_val=1.0))
+    cumul_total = _saisir_float("Cumul primes encaissees (total $) : ", min_val=0.0)
+    frais = _saisir_float(
+        f"Commission par contrat/leg ($, defaut {FRAIS_PAR_LEG_DEFAUT}) : ",
+        min_val=0.0,
+    )
 
     return {
         "ticker": ticker,
         "strike_csp": strike_csp,
         "expiry_csp": expiry_csp,
-        "premiums_cumul": premiums_cumul,
+        "premiums_cumul": cumul_total / (nb_contrats * 100),
+        "premiums_cumul_total": cumul_total,
+        "nb_contrats": nb_contrats,
+        "frais_par_leg": frais,
     }
 
 
@@ -291,7 +312,8 @@ def prix_rachat_csp(ticker_obj, strike_csp: float, expiry_csp: date) -> float:
 # ================================================================
 def generer_candidats_roll(ticker_obj, spot: float, strike_csp: float,
                             expiry_csp: date, expiries: list[tuple[str, int]],
-                            prix_rachat: float, today: date
+                            prix_rachat: float, today: date,
+                            frais_par_leg: float = FRAIS_PAR_LEG_DEFAUT,
                             ) -> tuple[list[dict], dict]:
     """Genere les candidats roll valides + stats de rejet.
 
@@ -301,6 +323,7 @@ def generer_candidats_roll(ticker_obj, spot: float, strike_csp: float,
     """
     dte_csp = (expiry_csp - today).days
     strike_floor = spot * SPOT_FLOOR_RATIO
+    fps = frais_par_leg / 100.0  # fee per share
     candidats = []
     stats = {"testes": 0, "rejet_credit": 0, "rejet_iv": 0, "rejet_prix": 0}
 
@@ -326,7 +349,7 @@ def generer_candidats_roll(ticker_obj, spot: float, strike_csp: float,
             if mid is None:
                 stats["rejet_prix"] += 1
                 continue
-            credit_net = mid - prix_rachat
+            credit_net = mid - prix_rachat - 2 * fps
             if credit_net < 0:
                 stats["rejet_credit"] += 1
                 continue
@@ -456,7 +479,9 @@ def fetch_dividendes_fenetre(ticker_obj, today: date, date_fin: date) -> float:
 
 
 def evaluer_trajectoire_b(ticker_obj, top_roll: dict, pru_net: float,
-                           spot: float, today: date) -> dict:
+                           spot: float, today: date,
+                           frais_par_leg: float = FRAIS_PAR_LEG_DEFAUT,
+                           ) -> dict:
     """Evalue assignation + CC a meme expiry que le top roll.
 
     Retourne dict avec viable (bool) et details. Si non viable : champ 'raison'.
@@ -495,7 +520,9 @@ def evaluer_trajectoire_b(ticker_obj, top_roll: dict, pru_net: float,
     expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
     div = fetch_dividendes_fenetre(ticker_obj, today, expiry_date)
 
-    yield_b = ((mid + div) / pru_net) * (365 / dte_cc)
+    fps = frais_par_leg / 100.0
+    prime_nette = mid - fps
+    yield_b = ((prime_nette + div) / pru_net) * (365 / dte_cc)
 
     return {
         "viable": True,
@@ -506,10 +533,12 @@ def evaluer_trajectoire_b(ticker_obj, top_roll: dict, pru_net: float,
         "dte_cc": dte_cc,
         "strike_cc": strike_cc,
         "prime_cc": mid,
+        "prime_cc_nette": prime_nette,
         "delta_cc": delta_cc,
         "iv_cc": iv_val,
         "dividendes": div,
         "yield_b": yield_b,
+        "frais_cc": fps,
     }
 
 
@@ -807,7 +836,11 @@ def main() -> int:
     print(f"  Ticker          : {inputs['ticker']}")
     print(f"  Strike CSP      : ${inputs['strike_csp']:.2f}")
     print(f"  Expiration      : {inputs['expiry_csp'].isoformat()}")
-    print(f"  Premiums cumul. : ${inputs['premiums_cumul']:.2f}")
+    print(f"  Contrats        : {inputs['nb_contrats']}")
+    print(f"  Premiums cumul. : ${inputs['premiums_cumul_total']:.2f} "
+          f"(${inputs['premiums_cumul']:.4f}/action)")
+    print(f"  Frais/leg       : ${inputs['frais_par_leg']:.2f}/contrat "
+          f"(${inputs['frais_par_leg']/100:.4f}/action)")
 
     print()
     print("-" * 64)
@@ -846,6 +879,7 @@ def main() -> int:
         candidats, stats = generer_candidats_roll(
             ticker_obj, spot, inputs["strike_csp"], inputs["expiry_csp"],
             expiries, prix_rachat, today,
+            frais_par_leg=inputs["frais_par_leg"],
         )
         afficher_top_rolls(candidats, stats, prix_rachat, n=3)
         if not candidats:
@@ -876,7 +910,8 @@ def main() -> int:
             print(" Trajectoire B : ASSIGNATION + COVERED CALL")
             print("-" * 64)
             traj_b = evaluer_trajectoire_b(
-                ticker_obj, candidats[0], pru_net, spot, today
+                ticker_obj, candidats[0], pru_net, spot, today,
+                frais_par_leg=inputs["frais_par_leg"],
             )
             afficher_trajectoire_b(traj_b, inputs["strike_csp"],
                                     inputs["premiums_cumul"])
